@@ -18,16 +18,10 @@ Features
 Installation
 ------------
 
-### Using npm:
-
-```bash
-npm install partial-js
-```
-
 ### Using a CDN:
 
 ```html
-<script src="https://cdn.jsdelivr.net/partial-coffee/partial-js"></script>
+<script src="https://cdn.jsdelivr.net/gh/partial-coffee/partial-js/src/partial.js"></script>
 ```
 
 Usage
