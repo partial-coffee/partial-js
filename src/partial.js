@@ -125,16 +125,16 @@ class Partial {
         this.handleError                = this.handleError.bind(this);
         this.dispatchCustomEvents       = this.dispatchCustomEvents.bind(this);
         this.dispatchEvent              = this.dispatchEvent.bind(this);
-        this.prepareRequestParams       = this.prepareRequestParams.bind(this);
         this.extractRequestParams       = this.extractRequestParams.bind(this);
         this.getMethod                  = this.getMethod.bind(this);
         this.getHeaders                 = this.getHeaders.bind(this);
-        this.prepareRequestBody         = this.prepareRequestBody.bind(this);
         this.addHook                    = this.addHook.bind(this);
         this.runHooks                   = this.runHooks.bind(this);
         this.use                        = this.use.bind(this);
-        this.prepareRequestUrl          = this.prepareRequestUrl.bind(this);
+        this.prepareRequestBody         = this.prepareRequestBody.bind(this);
         this.prepareRequestHeaders      = this.prepareRequestHeaders.bind(this);
+        this.prepareRequestParams       = this.prepareRequestParams.bind(this);
+        this.prepareRequestUrl          = this.prepareRequestUrl.bind(this);
         this.performRequest             = this.performRequest.bind(this);
         this.performRequestCore         = this.performRequestCore.bind(this);
         this.runMiddleware              = this.runMiddleware.bind(this);
@@ -265,7 +265,22 @@ class Partial {
 
         // Mark the element as initialized
         element.__xSSEInitialized = true;
+
+        // Setup a MutationObserver to detect when element is removed from the DOM
+        const observer = new MutationObserver((mutationsList, obs) => {
+            if (!document.body.contains(element)) {
+                // Element is no longer in the DOM
+                this.cleanupSSEElement(element);
+                obs.disconnect(); // Stop observing once cleaned up
+            }
+        });
+
+        // Observe changes to the entire document body or a suitable parent container
+        // Using the body is simplest, but you could pick a closer parent if desired
+        observer.observe(document.body, { childList: true, subtree: true });
     }
+
+
 
     /**
      * Handles incoming SSE messages for a specific element.
@@ -278,10 +293,10 @@ class Partial {
             const data = JSON.parse(event.data);
 
             const targetSelector = data.xTarget;
-            const targetElement = document.querySelector(targetSelector);
+            const targetElement = document.querySelector(targetSelector) || element;
 
-            if (!targetElement) {
-                console.error(`No element found with selector '${targetSelector}' for SSE message.`);
+            if (!targetElement || !document.body.contains(targetElement)) {
+                console.error(`No element found with selector '${targetSelector}' for SSE message or it is not in the DOM.`);
                 return;
             }
 
@@ -293,7 +308,7 @@ class Partial {
             // Optionally focus the target element
             const focusEnabled = data.xFocus !== 'false';
             if (this.autoFocus && focusEnabled) {
-                const newTargetElement = document.querySelector(targetSelector);
+                const newTargetElement = document.querySelector(targetSelector)|| element;
                 if (newTargetElement) {
                     if (newTargetElement.getAttribute('tabindex') === null) {
                         newTargetElement.setAttribute('tabindex', '-1');
