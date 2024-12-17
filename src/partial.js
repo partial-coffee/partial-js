@@ -235,7 +235,7 @@ class Partial {
         elements.forEach(element => {
             if (element.hasAttribute(this.ATTRIBUTES.SSE)) {
                 this.setupSSEElement(element);
-            } else if (element.hasAttribute(this.ATTRIBUTES.SSEALT)) {
+            } else if (element.hasAttribute(this.ATTRIBUTES.SSE_ALT)) {
                 this.setupSSEElementAlt(element);
             } else {
                 this.setupElement(element);
@@ -244,6 +244,7 @@ class Partial {
 
         // scan for elements with x-toggle-class attribute
         const toggleClassSelector = `[${this.ATTRIBUTES.TOGGLE_CLASS}]`;
+
         const toggleClassElements = container.querySelectorAll(toggleClassSelector);
 
         toggleClassElements.forEach(element => {
@@ -271,6 +272,7 @@ class Partial {
         const eventSource = new EventSource(sseUrl);
 
         eventSource.onmessage = (event) => {
+            console.log('SSE message:', event.data);
             this.handleSSEMessage(event, element).catch(error => {
                 this.handleError(error, element);
             });
@@ -304,7 +306,7 @@ class Partial {
         // Avoid attaching multiple listeners
         if (element.__xSSEInitialized) return;
 
-        const sseUrl = element.getAttribute(this.ATTRIBUTES.SSEALT);
+        const sseUrl = element.getAttribute(this.ATTRIBUTES.SSE_ALT);
         if (!sseUrl) {
             console.error('No URL specified in x-sse attribute on element:', element);
             return;
@@ -393,7 +395,7 @@ class Partial {
             /** @type {SseMessage} */
             const data = JSON.parse(event.data);
 
-            const targetSelector = data.xTarget;
+            const targetSelector = data.xTarget
             const targetElement = document.querySelector(targetSelector);
 
             if (!targetElement || !document.body.contains(targetElement)) {
@@ -465,12 +467,13 @@ class Partial {
             if (!element.__xToggleInitialized) {
                 element.addEventListener(trigger, (event) => {
                     event.preventDefault();
+                    console.log('Toggling class:', toggleClass);
+                    console.log('On element:', toggleTargetSelector);
                     const targetElement = document.querySelector(toggleTargetSelector);
                     if (targetElement) {
                         targetElement.classList.toggle(toggleClass);
                     } else {
                         console.error(`No element found for selector '${toggleTargetSelector}' to toggle class '${toggleClass}'`);
-                        this.handleError(new Error('Target element not found for class toggle'), element);
                     }
                 });
                 element.__xToggleInitialized = true;
