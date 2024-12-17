@@ -69,6 +69,9 @@ class Partial {
             SWAP:            'x-swap',
             INFINITE_SCROLL: 'x-infinite-scroll',
             TOGGLE_CLASS:    'x-toggle-class',
+            UPLOAD:          'x-upload',
+            UPLOAD_DROPZONE: 'x-upload-dropzone',
+            UPLOAD_INPUT:    'x-upload-input',
         };
 
         this.SERIALIZE_TYPES = {
@@ -143,7 +146,12 @@ class Partial {
         this.runMiddleware              = this.runMiddleware.bind(this);
 
         // Initialize the handler on DOMContentLoaded
-        document.addEventListener('DOMContentLoaded', () => this.scanForElements());
+        document.addEventListener('DOMContentLoaded', () => {
+            const obj= {};
+
+            partial.scanForElements();
+            partial.runHooks('afterSettle', { obj, document }).then(r => {});
+        });
 
         // Listen for popstate events
         window.addEventListener('popstate', this.handlePopState);
@@ -244,10 +252,16 @@ class Partial {
 
         // scan for elements with x-toggle-class attribute
         const toggleClassSelector = `[${this.ATTRIBUTES.TOGGLE_CLASS}]`;
-
         const toggleClassElements = container.querySelectorAll(toggleClassSelector);
 
         toggleClassElements.forEach(element => {
+            this.setupElement(element);
+        });
+
+        // scan for elements with x-upload attribute
+        const uploadSelector = `[${this.ATTRIBUTES.UPLOAD}]`;
+        const uploadElements = container.querySelectorAll(uploadSelector);
+        uploadElements.forEach(element => {
             this.setupElement(element);
         });
     }
@@ -272,7 +286,6 @@ class Partial {
         const eventSource = new EventSource(sseUrl);
 
         eventSource.onmessage = (event) => {
-            console.log('SSE message:', event.data);
             this.handleSSEMessage(event, element).catch(error => {
                 this.handleError(error, element);
             });
@@ -303,16 +316,14 @@ class Partial {
     }
 
     async setupSSEElementAlt(element) {
-        // Avoid attaching multiple listeners
         if (element.__xSSEInitialized) return;
 
         const sseUrl = element.getAttribute(this.ATTRIBUTES.SSE_ALT);
         if (!sseUrl) {
-            console.error('No URL specified in x-sse attribute on element:', element);
+            console.error('No URL specified in x-sse-alt attribute on element:', element);
             return;
         }
 
-        // Mark as initialized
         element.__xSSEInitialized = true;
 
         const controller = new AbortController();
@@ -333,54 +344,67 @@ class Partial {
                 throw new Error(`SSE POST request failed with status ${response.status}`);
             }
 
-            // Keep track of this connection so we can close it later if needed
-            this.sseConnections.set(element, { controller, response });
-
-            // Read the response as a stream
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
             let buffer = '';
 
+            this.sseConnections.set(element, { controller, reader });
+
             const processStream = async () => {
-                while (!signal.aborted) {
-                    const { value, done } = await reader.read();
-                    if (done) break; // Stream ended
-                    buffer += decoder.decode(value, { stream: true });
+                try {
+                    while (!signal.aborted) {
+                        let result;
+                        try {
+                            result = await reader.read();
+                        } catch (err) {
+                            // Check if this is an abort error
+                            if (signal.aborted && err.name === 'AbortError') {
+                                // Silently break without logging
+                                break;
+                            }
+                            // If it's another error, rethrow
+                            throw err;
+                        }
 
-                    // Split by newline and process complete lines
-                    const lines = buffer.split('\n');
-                    buffer = lines.pop(); // Keep incomplete line for next iteration
+                        const { value, done } = result;
+                        if (done) break;
 
-                    for (const line of lines) {
-                        // SSE messages start with "data: "
-                        if (line.startsWith('data: ')) {
-                            const message = line.substring(6).trim();
-                            try {
-                                // Construct a MessageEvent-like object
-                                const event = new MessageEvent('message', { data: message });
-                                await this.handleSSEMessage(event, element);
-                            } catch (error) {
-                                this.handleError(error, element);
+                        buffer += decoder.decode(value, { stream: true });
+                        const lines = buffer.split('\n');
+                        buffer = lines.pop();
+
+                        for (const line of lines) {
+                            if (line.startsWith('data: ')) {
+                                const message = line.substring(6).trim();
+                                try {
+                                    const event = new MessageEvent('message', { data: message });
+                                    await this.handleSSEMessage(event, element);
+                                } catch (error) {
+                                    this.handleError(error, element);
+                                }
                             }
                         }
                     }
+                } catch (err) {
+                    // Handle other stream errors
+                    this.handleError(err, element);
                 }
             };
 
             processStream().catch(err => this.handleError(err, element));
 
-            // Setup a MutationObserver to detect when element is removed from the DOM
             const observer = new MutationObserver((mutationsList, obs) => {
                 if (!document.body.contains(element)) {
-                    // Element is no longer in the DOM
-                    this.cleanupSSEElement(element);
-                    obs.disconnect(); // Stop observing once cleaned up
+                    this.cleanupSSEAltElement(element);
+                    obs.disconnect();
                 }
             });
-
             observer.observe(document.body, { childList: true, subtree: true });
 
         } catch (error) {
+            if (this.sseConnections.has(element)) {
+                this.cleanupSSEAltElement(element);
+            }
             this.handleError(error, element);
         }
     }
@@ -455,34 +479,18 @@ class Partial {
             return;
         }
 
-        const toggleClass = element.getAttribute(this.ATTRIBUTES.TOGGLE_CLASS);
-        const toggleTargetSelector = element.getAttribute(this.ATTRIBUTES.TARGET);
-
-        if (toggleClass && toggleTargetSelector) {
-            // This element is meant to toggle a class on a target element when triggered
-            const trigger = element.getAttribute(this.ATTRIBUTES.TRIGGER) ||
-                (element.tagName === 'FORM' ? 'submit' : 'click');
-
-            // Remove any previously added listeners to avoid duplication
-            if (!element.__xToggleInitialized) {
-                element.addEventListener(trigger, (event) => {
-                    event.preventDefault();
-                    console.log('Toggling class:', toggleClass);
-                    console.log('On element:', toggleTargetSelector);
-                    const targetElement = document.querySelector(toggleTargetSelector);
-                    if (targetElement) {
-                        targetElement.classList.toggle(toggleClass);
-                    } else {
-                        console.error(`No element found for selector '${toggleTargetSelector}' to toggle class '${toggleClass}'`);
-                    }
-                });
-                element.__xToggleInitialized = true;
-            }
-
-            // Return early since we do not perform a request for a class toggle action
+        const uploadAction = element.getAttribute(this.ATTRIBUTES.UPLOAD);
+        if (uploadAction) {
+            this.setupUpload(element);
             return;
         }
 
+        const toggleClass = element.getAttribute(this.ATTRIBUTES.TOGGLE_CLASS);
+        const toggleTargetSelector = element.getAttribute(this.ATTRIBUTES.TARGET);
+        if (toggleClass && toggleTargetSelector) {
+            this.setupToggleClass(element);
+            return;
+        }
 
         // Set a default trigger based on the element type
         let trigger;
@@ -650,6 +658,69 @@ class Partial {
         return paramsObject;
     }
 
+    // Toggle Class Methods
+    // --------------------
+
+    /**
+     * Sets up an element with x-toggle-class attribute to toggle a class on a target
+     */
+    setupToggleClass(element) {
+        const toggleClass = element.getAttribute(this.ATTRIBUTES.TOGGLE_CLASS);
+        const toggleTargetSelector = element.getAttribute(this.ATTRIBUTES.TARGET);
+
+        // This element is meant to toggle a class on a target element when triggered
+        const trigger = element.getAttribute(this.ATTRIBUTES.TRIGGER) ||
+            (element.tagName === 'FORM' ? 'submit' : 'click');
+
+        // Remove any previously added listeners to avoid duplication
+        if (!element.__xToggleInitialized) {
+            element.addEventListener(trigger, (event) => {
+                event.preventDefault();
+                const targetElement = document.querySelector(toggleTargetSelector);
+                if (targetElement) {
+                    targetElement.classList.toggle(toggleClass);
+                } else {
+                    console.error(`No element found for selector '${toggleTargetSelector}' to toggle class '${toggleClass}'`);
+                }
+            });
+            element.__xToggleInitialized = true;
+        }
+    }
+
+    // Upload Methods
+    // --------------
+
+    /**
+     * Sets up an element with x-upload attribute to handle file uploads.
+     */
+    setupUpload(element) {
+        // Avoid attaching multiple listeners
+        if (element.__xUploadInitialized) return;
+        const uploader = new PartialUpload({
+            dropzoneSelector: element.querySelector(element.getAttribute(this.ATTRIBUTES.UPLOAD_DROPZONE)),
+            fileInputSelector: element.querySelector(element.getAttribute(this.ATTRIBUTES.UPLOAD_INPUT)),
+            endpoint: element.getAttribute(this.ATTRIBUTES.UPLOAD),
+            resultTarget: element.querySelector(element.getAttribute(this.ATTRIBUTES.TARGET)),
+            swapOption: element.getAttribute(this.ATTRIBUTES.SWAP) || this.defaultSwapOption,
+            partial: this,
+        });
+
+        uploader.init();
+
+        // Mark the element as initialized
+        element.__xUploadInitialized = true;
+
+        const observer = new MutationObserver((mutationsList, obs) => {
+            if (!document.body.contains(element)) {
+                element.__xUploadInitialized = false;
+                uploader.destroy();
+                obs.disconnect();
+            }
+        });
+        observer.observe(document.body, { childList: true, subtree: true });
+    }
+
+
     // Action Handling Methods
     // -----------------------
 
@@ -764,7 +835,6 @@ class Partial {
                 }
                 targetElement.focus();
             }
-
         } catch (error) {
             const onErrorAttr = element.getAttribute(this.ATTRIBUTES.ON_ERROR);
             if (onErrorAttr && typeof window[onErrorAttr] === 'function') {
@@ -1503,6 +1573,25 @@ class Partial {
         if (this.sseConnections.has(element)) {
             const eventSource = this.sseConnections.get(element);
             eventSource.close();
+            this.sseConnections.delete(element);
+            element.__xSSEInitialized = false;
+        }
+    }
+
+    /**
+     * Clean up the makeshift SSE (SSEAlt) connections when elements are removed.
+     * @param {HTMLElement} element
+     */
+    cleanupSSEAltElement(element) {
+        if (this.sseConnections.has(element)) {
+            const { controller } = this.sseConnections.get(element);
+            if (controller && typeof controller.abort === 'function') {
+                try {
+                    controller.abort(); // Abort the fetch request and stop reading
+                }catch (e) {
+                }
+
+            }
             this.sseConnections.delete(element);
             element.__xSSEInitialized = false;
         }

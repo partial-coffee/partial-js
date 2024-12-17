@@ -1,32 +1,27 @@
 // @ts-check
 
 /**
- *     const uploader = new FileUploader({
- *         dropzoneId: "dropzone",
- *         fileInputId: "dropzone-file",
- *         endpoint: "/admin/media/upload-image/{{ .Data.Entity }}/{{ .Data.EntityUUID }}",
- *         resultTarget: "#imageResults",
- *         fileTypes: ['image/*', 'application/pdf']
- *     });
- */
-
-/**
  * @typedef {Object} config
- * @property {string} dropzoneSelector  - The id of the dropzone element
- * @property {string} fileInputSelector - The id of the file input element
+ * @property {string} dropzoneSelector  - The dropzone element
+ * @property {string} fileInputSelector - The file input element
  * @property {string} endpoint          - The URL to upload the file to
- * @property {string} resultTarget      - The id of the element where the result should be displayed
+ * @property {string} resultTarget      - The object where the result should be displayed
  * @property {array} [fileType]         - The type of files to accept
  * @property {Object} [partial]         - The partial object
+ * @property {string} [swapOption]      - The swap option
  */
 class PartialUpload {
     constructor(config) {
-        this.dropzone     = document.querySelector(config.dropzoneSelector) || "#partialupload-dropzone";
-        this.fileInput    = document.querySelector(config.fileInputSelector) || "#partialupload-file";
+        this.dropzone     = config.dropzoneSelector;
+        this.fileInput    = config.fileInputSelector;
         this.endpoint     = config.endpoint || "/upload";
-        this.resultTarget = config.resultTarget || "#partialupload-result";
-        this.partial      = window.partial || config.partial;
+        this.resultTarget = config.resultTarget;
+        this.partial      = config.partial;
         this.fileTypes    = config.fileType || ['image/*'];
+        this.swapOption   = config.swapOption || 'outerHTML';
+
+        this.destroyed    = false;
+        this.boundEvents  = [];
 
         if(!this.partial){
             console.error('partial.js is required for this component to work');
@@ -37,10 +32,17 @@ class PartialUpload {
     }
 
     init() {
-        this.dropzone.addEventListener("dragover", (event) => this.handleDragOver(event));
-        this.dropzone.addEventListener("dragleave", (event) => this.handleDragLeave(event));
-        this.dropzone.addEventListener("drop", (event) => this.handleDrop(event));
-        this.fileInput.addEventListener("change", (event) => this.handleFileInputChange(event));
+        this.addEvent(this.dropzone, "dragover", (event) => this.handleDragOver(event));
+        this.addEvent(this.dropzone, "dragleave", (event) => this.handleDragLeave(event));
+        this.addEvent(this.dropzone, "drop", (event) => this.handleDrop(event));
+        this.addEvent(this.fileInput, "change", (event) => this.handleFileInputChange(event));
+    }
+
+    addEvent(element, eventName, handler) {
+        if (element) {
+            element.addEventListener(eventName, handler);
+            this.boundEvents.push({ element, eventName, handler });
+        }
     }
 
     handleDragOver(event) {
@@ -77,20 +79,40 @@ class PartialUpload {
         }
 
         try {
+            const headers = new Headers();
+            headers.append('X-Action', 'upload');
+
+            if (this.partial.csrfToken) {
+                if (typeof this.partial.csrfToken === 'function') {
+                    headers.append('X-CSRF-Token', this.partial.csrfToken());
+                } else {
+                    headers.append('X-CSRF-Token', this.partial.csrfToken);
+                }
+            }
+
             const response = await fetch(this.endpoint, {
                 method: 'POST',
                 body: formData,
+                headers: headers
             });
 
             if (response.ok) {
                 const body = await response.text();
-                this.partial.performSwap(this.resultTarget, body, 'outerHTML');
-
+                this.partial.performSwap(this.resultTarget, body, this.swapOption);
             } else {
                 console.error('File upload failed', response);
             }
         } catch (error) {
             console.error('Error uploading file', error);
         }
+    }
+
+    destroy() {
+        if (this.destroyed) return;
+        this.boundEvents.forEach(({ element, eventName, handler }) => {
+            element.removeEventListener(eventName, handler);
+        });
+        this.boundEvents = [];
+        this.destroyed = true;
     }
 }
