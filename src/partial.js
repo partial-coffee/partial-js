@@ -59,6 +59,7 @@ class Partial {
             BEFORE:          'x-before',
             AFTER:           'x-after',
             SSE:             'x-sse',
+            SSE_ALT:         'x-sse-alt',
             INDICATOR:       'x-indicator',
             CONFIRM:         'x-confirm',
             TIMEOUT:         'x-timeout',
@@ -67,6 +68,7 @@ class Partial {
             LOADING_CLASS:   'x-loading-class',
             SWAP:            'x-swap',
             INFINITE_SCROLL: 'x-infinite-scroll',
+            TOGGLE_CLASS:    'x-toggle-class',
         };
 
         this.SERIALIZE_TYPES = {
@@ -115,6 +117,7 @@ class Partial {
         this.scanForElements            = this.scanForElements.bind(this);
         this.setupElement               = this.setupElement.bind(this);
         this.setupSSEElement            = this.setupSSEElement.bind(this);
+        this.setupSSEElementAlt         = this.setupSSEElementAlt.bind(this);
         this.setupInfiniteScroll        = this.setupInfiniteScroll.bind(this);
         this.stopInfiniteScroll         = this.stopInfiniteScroll.bind(this);
         this.handleAction               = this.handleAction.bind(this);
@@ -217,17 +220,34 @@ class Partial {
     }
 
     scanForElements(container = document) {
-        const actionSelector = Object.values(this.ATTRIBUTES.ACTIONS).map(attr => `[${attr}]`).join(',');
+        const actionSelector = Object.values(this.ATTRIBUTES.ACTIONS)
+            .map(attr => `[${attr}]`)
+            .join(',');
+
         const sseSelector = `[${this.ATTRIBUTES.SSE}]`;
-        const combinedSelector = `${actionSelector}, ${sseSelector}`;
+        const sseAltSelector = `[${this.ATTRIBUTES.SSE_ALT}]`;
+
+        // Include sseAltSelector in the combinedSelector
+        const combinedSelector = `${actionSelector}, ${sseSelector}, ${sseAltSelector}`;
+
         const elements = container.querySelectorAll(combinedSelector);
 
         elements.forEach(element => {
             if (element.hasAttribute(this.ATTRIBUTES.SSE)) {
                 this.setupSSEElement(element);
+            } else if (element.hasAttribute(this.ATTRIBUTES.SSEALT)) {
+                this.setupSSEElementAlt(element);
             } else {
                 this.setupElement(element);
             }
+        });
+
+        // scan for elements with x-toggle-class attribute
+        const toggleClassSelector = `[${this.ATTRIBUTES.TOGGLE_CLASS}]`;
+        const toggleClassElements = container.querySelectorAll(toggleClassSelector);
+
+        toggleClassElements.forEach(element => {
+            this.setupElement(element);
         });
     }
 
@@ -280,7 +300,88 @@ class Partial {
         observer.observe(document.body, { childList: true, subtree: true });
     }
 
+    async setupSSEElementAlt(element) {
+        // Avoid attaching multiple listeners
+        if (element.__xSSEInitialized) return;
 
+        const sseUrl = element.getAttribute(this.ATTRIBUTES.SSEALT);
+        if (!sseUrl) {
+            console.error('No URL specified in x-sse attribute on element:', element);
+            return;
+        }
+
+        // Mark as initialized
+        element.__xSSEInitialized = true;
+
+        const controller = new AbortController();
+        const signal = controller.signal;
+
+        try {
+            const response = await fetch(sseUrl, {
+                method: 'POST',
+                headers: {
+                    'Accept': 'text/event-stream',
+                    'Cache-Control': 'no-cache',
+                    'X-Accel-Buffering': 'no'
+                },
+                signal
+            });
+
+            if (!response.ok) {
+                throw new Error(`SSE POST request failed with status ${response.status}`);
+            }
+
+            // Keep track of this connection so we can close it later if needed
+            this.sseConnections.set(element, { controller, response });
+
+            // Read the response as a stream
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            const processStream = async () => {
+                while (!signal.aborted) {
+                    const { value, done } = await reader.read();
+                    if (done) break; // Stream ended
+                    buffer += decoder.decode(value, { stream: true });
+
+                    // Split by newline and process complete lines
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop(); // Keep incomplete line for next iteration
+
+                    for (const line of lines) {
+                        // SSE messages start with "data: "
+                        if (line.startsWith('data: ')) {
+                            const message = line.substring(6).trim();
+                            try {
+                                // Construct a MessageEvent-like object
+                                const event = new MessageEvent('message', { data: message });
+                                await this.handleSSEMessage(event, element);
+                            } catch (error) {
+                                this.handleError(error, element);
+                            }
+                        }
+                    }
+                }
+            };
+
+            processStream().catch(err => this.handleError(err, element));
+
+            // Setup a MutationObserver to detect when element is removed from the DOM
+            const observer = new MutationObserver((mutationsList, obs) => {
+                if (!document.body.contains(element)) {
+                    // Element is no longer in the DOM
+                    this.cleanupSSEElement(element);
+                    obs.disconnect(); // Stop observing once cleaned up
+                }
+            });
+
+            observer.observe(document.body, { childList: true, subtree: true });
+
+        } catch (error) {
+            this.handleError(error, element);
+        }
+    }
 
     /**
      * Handles incoming SSE messages for a specific element.
@@ -293,7 +394,7 @@ class Partial {
             const data = JSON.parse(event.data);
 
             const targetSelector = data.xTarget;
-            const targetElement = document.querySelector(targetSelector) || element;
+            const targetElement = document.querySelector(targetSelector);
 
             if (!targetElement || !document.body.contains(targetElement)) {
                 console.error(`No element found with selector '${targetSelector}' for SSE message or it is not in the DOM.`);
@@ -308,7 +409,7 @@ class Partial {
             // Optionally focus the target element
             const focusEnabled = data.xFocus !== 'false';
             if (this.autoFocus && focusEnabled) {
-                const newTargetElement = document.querySelector(targetSelector)|| element;
+                const newTargetElement = document.querySelector(targetSelector)
                 if (newTargetElement) {
                     if (newTargetElement.getAttribute('tabindex') === null) {
                         newTargetElement.setAttribute('tabindex', '-1');
@@ -351,6 +452,34 @@ class Partial {
             element.__xRequestHandlerInitialized = true;
             return;
         }
+
+        const toggleClass = element.getAttribute(this.ATTRIBUTES.TOGGLE_CLASS);
+        const toggleTargetSelector = element.getAttribute(this.ATTRIBUTES.TARGET);
+
+        if (toggleClass && toggleTargetSelector) {
+            // This element is meant to toggle a class on a target element when triggered
+            const trigger = element.getAttribute(this.ATTRIBUTES.TRIGGER) ||
+                (element.tagName === 'FORM' ? 'submit' : 'click');
+
+            // Remove any previously added listeners to avoid duplication
+            if (!element.__xToggleInitialized) {
+                element.addEventListener(trigger, (event) => {
+                    event.preventDefault();
+                    const targetElement = document.querySelector(toggleTargetSelector);
+                    if (targetElement) {
+                        targetElement.classList.toggle(toggleClass);
+                    } else {
+                        console.error(`No element found for selector '${toggleTargetSelector}' to toggle class '${toggleClass}'`);
+                        this.handleError(new Error('Target element not found for class toggle'), element);
+                    }
+                });
+                element.__xToggleInitialized = true;
+            }
+
+            // Return early since we do not perform a request for a class toggle action
+            return;
+        }
+
 
         // Set a default trigger based on the element type
         let trigger;
